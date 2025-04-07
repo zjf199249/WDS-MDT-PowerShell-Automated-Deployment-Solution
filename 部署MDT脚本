@@ -1,0 +1,215 @@
+# 导入 MDT PowerShell 模块
+$MDTPath = "${env:ProgramFiles}\Microsoft Deployment Toolkit\bin"
+Import-Module "$MDTPath\MicrosoftDeploymentToolkit.psd1" -Force
+
+# 获取本机IP地址
+$ipAddress = (Test-Connection -ComputerName (hostname) -Count 1).IPV4Address.IPAddressToString
+if (-not $ipAddress) {
+    Write-Host "错误：无法获取有效的IP地址" -ForegroundColor Red
+    exit 1
+}
+Write-Host "获取到的IP地址: $ipAddress" -ForegroundColor Green
+
+# 配置核心参数
+$DriveName = "DS001"
+$MDTPath = "D:\MDT"
+
+# 检查并创建部署共享文件夹
+if (-not (Test-Path -Path $MDTPath)) {
+    New-Item -Path $MDTPath -ItemType Directory -Force
+    Write-Host "已创建部署共享文件夹" -ForegroundColor Green
+}
+
+# 检查并删除已存在的 PSDrive
+if (Get-PSDrive -Name $DriveName -ErrorAction SilentlyContinue) {
+    Remove-PSDrive -Name $DriveName -Force
+    Write-Host "已移除现有的 PSDrive: $DriveName" -ForegroundColor Yellow
+}
+
+# 创建 MDT PSDrive
+try {
+    New-PSDrive -Name $DriveName -PSProvider MDTProvider -Root $MDTPath -Description "MDT Deployment Share" -NetworkPath "\\$env:COMPUTERNAME\MDT$" | Add-MDTPersistentDrive
+    Write-Host "MDT PSDrive 创建成功" -ForegroundColor Green
+} catch {
+    Write-Host "错误：创建 MDT PSDrive 失败" -ForegroundColor Red
+    Write-Host "错误信息：$($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+
+# 创建部署共享
+try {
+    # 检查并删除已存在的网络共享
+    if (Get-SmbShare -Name "MDT$" -ErrorAction SilentlyContinue) {
+        Remove-SmbShare -Name "MDT$" -Force
+        Write-Host "已移除现有网络共享" -ForegroundColor Yellow
+    }
+
+    # 创建网络共享
+    New-SmbShare -Name "MDT$" -Path $MDTPath -FullAccess "Administrators" -ReadAccess "Everyone"
+    Write-Host "网络共享创建成功: \\$env:COMPUTERNAME\MDT$" -ForegroundColor Green
+
+    # 设置 NTFS 权限
+    $Acl = Get-Acl $MDTPath
+    $AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("Everyone","ReadAndExecute","ContainerInherit,ObjectInherit","None","Allow")
+    $Acl.SetAccessRule($AccessRule)
+    Set-Acl $MDTPath $Acl
+    Write-Host "共享权限设置成功" -ForegroundColor Green
+
+    # 创建 MDT 部署共享
+    New-MDT -Path $MDTPath -ErrorAction Stop
+    Write-Host "MDT 部署共享创建成功" -ForegroundColor Green
+
+} catch {
+
+}
+
+# 设置Rules
+$rules = @"
+[Settings]
+Priority=TaskSequenceID,Default
+Properties=MyCustomProperty
+
+
+[Default]
+OSInstall=YES
+SkipCapture=YES
+SkipAdminPassword=YES
+SkipProductKey=YES
+SkipComputerBackup=NO
+SkipBitLocker=YES
+SkipAppsOnUpgrade=YES
+SkipDeploymentType=NO
+DeploymentType=NEWCOMPUTER
+SkipComputerName=YES
+OSDComputerName=%SerialNumber%
+Adminpassword=Kw+%SerialNumber%
+SkipDomainMembership=YES
+SkipTaskSequence=NO
+SkipFinalSummary=YES
+SkipBDDWelcome=YES
+SkipTimeZone=YES
+TimeZoneName=China Standard Time
+KeyboardLocale=zh-cn
+UserLocale=zh-cn
+UILanguage=zh-cn
+SkipLocaleSelection=YES
+SkipUserData=YES
+SkipSummary=YES
+SkipApplications=YES
+
+
+Applications1=
+Applications2=
+Applications3=
+Applications4=
+Applications5=
+Applications6=
+Applications7=
+Applications8=
+Applications9=
+Applications10=
+
+[01]
+JoinWorkGroup=WORKGROUP
+
+[02]
+JoinWorkGroup=WORKGROUP
+
+[03]
+JoinWorkGroup=WORKGROUP
+
+[04]
+JoinWorkGroup=WORKGROUP
+
+"@
+Set-Content -Path "$MDTPath\Control\CustomSettings.ini" -Value $rules
+
+# 设置Bootstrap.ini
+$bootstrap = @"
+[Settings]
+Priority=Default
+
+[Default]
+DeployRoot=\\$ipAddress\MDT$
+
+SkipBDDWelcome=YES
+
+UserID=Administrator
+
+UserPassword=K4w3,a2i1!
+
+KeyboardLocale=zh-cn
+
+UserDomain=WDS
+"@
+Set-Content -Path "$MDTPath\Control\Bootstrap.ini" -Value $bootstrap
+
+
+Start-Sleep -Seconds 1
+#打开MDT
+$workbenchPath = "C:\Program Files\Microsoft Deployment Toolkit\Bin\DeploymentWorkbench.msc"
+try {
+    if (Test-Path $workbenchPath) {
+        Start-Process $workbenchPath
+        Write-Host "正在启动 Deployment Workbench..." -ForegroundColor Green
+        
+        # 等待程序启动
+        Start-Sleep -Seconds 3
+        
+        # 模拟按键操作
+        $shell = New-Object -ComObject WScript.Shell
+        
+        # 展开 MDTs
+        $shell.SendKeys('{LEFT}')
+        Start-Sleep -Seconds 1
+        $shell.SendKeys('{RIGHT}')
+        Start-Sleep -Seconds 1
+        
+        # 展开 Deployment Shares
+        $shell.SendKeys('{DOWN}')
+        Start-Sleep -Seconds 1
+        $shell.SendKeys('{RIGHT}')
+        Start-Sleep -Seconds 2
+        
+        # 关闭程序
+        $processes = Get-Process | Where-Object {$_.MainWindowTitle -like "*Deployment Workbench*"}
+        foreach ($process in $processes) {
+            $process.CloseMainWindow()
+        }
+        
+        Write-Host "操作完成，已关闭 Deployment Workbench" -ForegroundColor Green
+    } else {
+        Write-Host "错误：找不到 Deployment Workbench 程序" -ForegroundColor Red
+    }
+} catch {
+    Write-Host "执行过程中发生错误：$($_.Exception.Message)" -ForegroundColor Red
+}
+
+Start-Sleep -Seconds 5
+
+# 配置 Windows PE 
+$configPath = "$MDTPath\Control\Settings.xml"
+[xml]$config = Get-Content $configPath 
+
+# 设置 UNCPath
+$uncNode = $config.SelectSingleNode("//UNCPath")
+if ($uncNode -eq $null) {
+    $uncNode = $config.CreateElement("UNCPath")
+    $config.Settings.AppendChild($uncNode)
+}
+$uncNode.InnerText = "\\$env:COMPUTERNAME\MDT$"
+
+$config.SelectSingleNode("//Boot.x64.LiteTouchWIMDescription").InnerText = "InstallOS_x64"
+$featurePacks = "winpe-dismcmdlets,winpe-enhancedstorage,winpe-fontsupport-winre,winpe-fontsupport-zh-cn,winpe-gamingperipherals,winpe-mdac,winpe-netfx,winpe-powershell,winpe-securebootcmdlets,winpe-storagewmi"
+$config.SelectSingleNode("//Boot.x64.FeaturePacks").InnerText = $featurePacks
+$config.SelectSingleNode("//SupportX86").InnerText = "False"
+$config.SelectSingleNode("//Boot.x64.GenericISOName").InnerText = "Generic_x64.iso"
+$config.SelectSingleNode("//Boot.x64.GenerateLiteTouchISO").InnerText = "False"
+$config.SelectSingleNode("//Boot.x86.GenerateLiteTouchISO").InnerText = "False"
+
+# 保存配置
+$config.Save($configPath)
+Write-Host "Windows PE 配置更新成功" -ForegroundColor Green
+
+
+Write-Host "MDT配置和文件夹结构创建已全部完成。"
