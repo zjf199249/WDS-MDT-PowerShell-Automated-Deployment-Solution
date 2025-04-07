@@ -1,0 +1,46 @@
+# 确保 WDS 角色已正确安装
+$feature = Get-WindowsFeature -Name WDS
+if (-not $feature.Installed) {
+    Install-WindowsFeature -Name WDS-Deployment -IncludeManagementTools
+}
+
+# 设置变量
+$wdsServer = "localhost"
+$remoteInstallPath = "D:\WDS"
+
+# 检查并创建远程安装目录
+if (-Not (Test-Path $remoteInstallPath)) {
+    New-Item -Path $remoteInstallPath -ItemType Directory
+}
+
+# 停止 WDS 服务
+Stop-Service WDSServer -ErrorAction SilentlyContinue
+
+# 配置 WDS 服务器
+try {
+    # 初始化服务器
+    WDSUTIL /Initialize-Server /RemInst:$remoteInstallPath /Standalone
+
+    # 等待服务初始化
+    Start-Sleep -Seconds 10
+
+    # 启动服务
+    Start-Service WDSServer
+
+    # 配置基本设置
+    WDSUTIL /Set-Server /Server:$wdsServer /AnswerClients:All
+
+    # 配置 DHCP 设置（不侦听 DHCP 端口）
+    WDSUTIL /Set-Server /Server:$wdsServer /UseDHCPPorts:No
+
+} catch {
+    Write-Host "配置过程中出错：$($_.Exception.Message)" -ForegroundColor Red
+}
+
+# 验证服务状态
+$service = Get-Service WDSServer
+if ($service.Status -eq 'Running') {
+    Write-Host "WDS 服务已成功启动" -ForegroundColor Green
+} else {
+    Write-Host "警告：WDS 服务未能启动" -ForegroundColor Red
+}
